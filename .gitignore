@@ -1,0 +1,11 @@
+# Dependencies
+/node_modules
+
+# Environment variables
+.env
+
+# Uploaded files from users
+/uploads
+
+# macOS specific files
+.DS_Store
