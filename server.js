@@ -101,7 +101,7 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         form.append('source', fs.createReadStream(tempFilePath));
         
         const uploadResponse = await axios.post(
-            `https://graph.facebook.com/v20.0/act_${accountId}/advideos`,
+            `https://graph.facebook.com/v20.0/${accountId}/advideos`,
             form,
             {
                 headers: form.getHeaders(),
