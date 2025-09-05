@@ -4,6 +4,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const bizSdk = require('facebook-nodejs-business-sdk');
+const axios = require('axios');
+const FormData = require('form-data');
 const timeout = require('connect-timeout');
 
 const app = express();
@@ -11,6 +13,11 @@ const port = process.env.PORT || 8081;
 
 // --- Facebook SDK Initialization ---
 const accessToken = process.env.FACEBOOK_ACCESS_TOKEN;
+const AdAccount = bizSdk.AdAccount;
+const Campaign = bizSdk.Campaign;
+const AdSet = bizSdk.AdSet;
+const AdCreative = bizSdk.AdCreative;
+const Ad = bizSdk.Ad;
 if (accessToken) {
     bizSdk.FacebookAdsApi.init(accessToken);
 }
@@ -24,7 +31,6 @@ app.get('/api/accounts', async (req, res) => {
         return res.status(400).json({ error: 'Token de acesso não configurado.' });
     }
     try {
-        const AdAccount = bizSdk.AdAccount;
         const me = new bizSdk.User('me');
         const adAccounts = await me.getAdAccounts([AdAccount.Fields.name, AdAccount.Fields.id]);
         res.json(adAccounts.map(acc => ({ id: acc.id, name: acc.name })));
@@ -37,9 +43,9 @@ app.get('/api/accounts', async (req, res) => {
 app.get('/api/campaigns/:accountId', async (req, res) => {
     try {
         const { accountId } = req.params;
-        const account = new bizSdk.AdAccount(accountId);
+        const account = new AdAccount(accountId);
         const campaigns = await account.getCampaigns(
-            [bizSdk.Campaign.Fields.name, bizSdk.Campaign.Fields.promoted_object],
+            [Campaign.Fields.name, Campaign.Fields.promoted_object],
             { effective_status: ['ACTIVE'] }
         );
         const campaignsData = campaigns.map(campaign => ({
@@ -57,7 +63,7 @@ app.get('/api/campaigns/:accountId', async (req, res) => {
 app.get('/api/latest-ad-details/:adSetId', async (req, res) => {
     try {
         const { adSetId } = req.params;
-        const adSet = new bizSdk.AdSet(adSetId);
+        const adSet = new AdSet(adSetId);
         const ads = await adSet.getAds(
             ['id', 'name', 'creative{object_story_spec}'],
             { limit: 1, date_preset: 'last_year' }
@@ -89,24 +95,33 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         const { 'campaign-select': campaignId, 'ad-name': adName, 'account-select': accountId, 'creative-spec': creativeSpecJSON } = req.body;
         const creativeSpec = JSON.parse(creativeSpecJSON);
 
-        // 1. Upload Ad Video directly from the temporary file path
-        const account = new bizSdk.AdAccount(accountId);
-        const adVideo = await account.createAdVideo([], {
-            [bizSdk.AdVideo.Fields.filepath]: tempFilePath,
-            [bizSdk.AdVideo.Fields.name]: 'Video - ' + adName,
-        });
+        // 1. Manual Video Upload using Axios
+        const form = new FormData();
+        form.append('access_token', accessToken);
+        form.append('source', fs.createReadStream(tempFilePath));
+        
+        const uploadResponse = await axios.post(
+            `https://graph.facebook.com/v20.0/act_${accountId}/advideos`,
+            form,
+            {
+                headers: form.getHeaders(),
+                timeout: 600000 // 10 minutes timeout
+            }
+        );
+        const adVideoId = uploadResponse.data.id;
 
         // 2. Create Ad Creative by modifying the template
         const newCreativeSpec = { ...creativeSpec };
-        newCreativeSpec.video_data.video_id = adVideo.id;
+        newCreativeSpec.video_data.video_id = adVideoId;
         delete newCreativeSpec.video_data.image_url; 
         delete newCreativeSpec.video_data.image_hash;
 
+        const account = new AdAccount(accountId);
         const creative = await account.createAdCreative(
             {},
             {
-                [bizSdk.AdCreative.Fields.name]: 'Criativo - ' + adName,
-                [bizSdk.AdCreative.Fields.object_story_spec]: newCreativeSpec
+                [AdCreative.Fields.name]: 'Criativo - ' + adName,
+                [AdCreative.Fields.object_story_spec]: newCreativeSpec
             }
         );
 
@@ -114,10 +129,10 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         const ad = await account.createAd(
             [],
             {
-                [bizSdk.Ad.Fields.name]: adName,
-                [bizSdk.Ad.Fields.adset_id]: campaignId,
-                [bizSdk.Ad.Fields.creative]: { creative_id: creative.id },
-                [bizSdk.Ad.Fields.status]: bizSdk.Ad.Status.paused
+                [Ad.Fields.name]: adName,
+                [Ad.Fields.adset_id]: campaignId,
+                [Ad.Fields.creative]: { creative_id: creative.id },
+                [Ad.Fields.status]: Ad.Status.paused
             }
         );
 
@@ -125,8 +140,9 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
 
     } catch (error) {
         console.error('--- ERRO AO CRIAR ANÚNCIO ---');
-        console.error(JSON.stringify(error.response ? error.response.data : error, null, 2));
-        res.status(500).json({ error: 'Falha ao criar anúncio.', details: error.message });
+        const errorMessage = error.response ? JSON.stringify(error.response.data, null, 2) : error.message;
+        console.error(errorMessage);
+        res.status(500).json({ error: 'Falha ao criar anúncio.', details: errorMessage });
     } finally {
         // 4. Clean up the temporary file
         fs.unlink(tempFilePath, (err) => {
