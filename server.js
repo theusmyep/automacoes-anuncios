@@ -97,7 +97,6 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
                     [bizSdk.AdCreativeObjectStorySpec.Fields.page_id]: pageId,
                     [bizSdk.AdCreativeObjectStorySpec.Fields.video_data]: {
                         [bizSdk.AdCreativeVideoData.Fields.video_id]: adVideo.id,
-                        [bizSdk.AdCreativeVideoData.Fields.image_url]: 'https://www.facebook.com/images/games/uno/uno_icon.png', // Placeholder thumbnail
                         [bizSdk.AdCreativeVideoData.Fields.call_to_action]: {
                             type: 'LEARN_MORE',
                             value: { link: 'https://www.facebook.com' }
