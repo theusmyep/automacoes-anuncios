@@ -86,7 +86,7 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         });
 
         // Wait for video to be processed
-        await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15s, adjust as needed
+        await new Promise(resolve => setTimeout(resolve, 60000)); // Wait 60s, adjust as needed
 
         // 4. Create Ad Creative
         const creative = await account.createAdCreative(
