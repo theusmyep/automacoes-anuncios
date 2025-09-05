@@ -75,13 +75,13 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         const fileName = `${Date.now()}-${req.file.originalname}`;
         await minioClient.putObject(bucketName, fileName, req.file.buffer, req.file.size);
 
-        // 2. Generate a temporary presigned URL for Facebook to access the file
-        const presignedUrl = await minioClient.presignedGetObject(bucketName, fileName, 60 * 60); // URL valid for 1 hour
+        // 2. Construct the direct public URL for the object
+        const publicUrl = `https://${process.env.MINIO_ENDPOINT}/${bucketName}/${fileName}`;
 
-        // 3. Create Ad Video using the presigned URL
+        // 3. Create Ad Video using the direct public URL
         const account = new bizSdk.AdAccount(accountId);
         const adVideo = await account.createAdVideo([], {
-            [bizSdk.AdVideo.Fields.file_url]: presignedUrl,
+            [bizSdk.AdVideo.Fields.file_url]: publicUrl,
             [bizSdk.AdVideo.Fields.name]: 'Video - ' + adName,
         });
 
