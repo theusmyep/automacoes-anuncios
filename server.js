@@ -98,7 +98,10 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         // 1. Manual Video Upload using Axios
         const form = new FormData();
         form.append('access_token', accessToken);
-        form.append('source', fs.createReadStream(tempFilePath));
+        form.append('source', fs.createReadStream(tempFilePath), {
+            filename: req.file.originalname,
+            contentType: req.file.mimetype,
+        });
         
         const uploadResponse = await axios.post(
             `https://graph.facebook.com/v20.0/${accountId}/advideos`,
