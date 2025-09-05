@@ -2,8 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 const bizSdk = require('facebook-nodejs-business-sdk');
-const Minio = require('minio');
 const timeout = require('connect-timeout');
 
 const app = express();
@@ -15,17 +15,8 @@ if (accessToken) {
     bizSdk.FacebookAdsApi.init(accessToken);
 }
 
-// --- Minio Client Initialization ---
-const minioClient = new Minio.Client({
-    endPoint: process.env.MINIO_ENDPOINT,
-    useSSL: process.env.MINIO_USE_SSL === 'true',
-    accessKey: process.env.MINIO_ACCESS_KEY,
-    secretKey: process.env.MINIO_SECRET_KEY
-});
-const bucketName = process.env.MINIO_BUCKET_NAME;
-
-// --- Multer setup for in-memory storage ---
-const upload = multer({ storage: multer.memoryStorage() });
+// --- Multer setup for temporary local storage ---
+const upload = multer({ dest: 'temp_uploads/' });
 
 // --- API Routes ---
 app.get('/api/accounts', async (req, res) => {
@@ -69,7 +60,7 @@ app.get('/api/latest-ad-details/:adSetId', async (req, res) => {
         const adSet = new bizSdk.AdSet(adSetId);
         const ads = await adSet.getAds(
             ['id', 'name', 'creative{object_story_spec}'],
-            { limit: 1, date_preset: 'last_year' } // Busca o anúncio mais recente no último ano
+            { limit: 1, date_preset: 'last_year' }
         );
 
         if (ads.length === 0) {
@@ -92,31 +83,22 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         return res.status(400).json({ error: 'Nenhum arquivo de criativo enviado.' });
     }
 
+    const tempFilePath = req.file.path;
+
     try {
         const { 'campaign-select': campaignId, 'ad-name': adName, 'account-select': accountId, 'creative-spec': creativeSpecJSON } = req.body;
         const creativeSpec = JSON.parse(creativeSpecJSON);
 
-        // 1. Upload to Minio
-        const fileName = `${Date.now()}-${req.file.originalname}`;
-        await minioClient.putObject(bucketName, fileName, req.file.buffer, req.file.size);
-
-        // 2. Construct the direct public URL for the object
-        const publicUrl = `https://${process.env.MINIO_ENDPOINT}/${bucketName}/${fileName}`;
-
-        // 3. Create Ad Video using the direct public URL
+        // 1. Upload Ad Video directly from the temporary file path
         const account = new bizSdk.AdAccount(accountId);
         const adVideo = await account.createAdVideo([], {
-            [bizSdk.AdVideo.Fields.file_url]: publicUrl,
+            [bizSdk.AdVideo.Fields.filepath]: tempFilePath,
             [bizSdk.AdVideo.Fields.name]: 'Video - ' + adName,
         });
 
-        // Wait for video to be processed
-        await new Promise(resolve => setTimeout(resolve, 60000)); // Wait 60s, adjust as needed
-
-        // 4. Create Ad Creative by modifying the template
+        // 2. Create Ad Creative by modifying the template
         const newCreativeSpec = { ...creativeSpec };
         newCreativeSpec.video_data.video_id = adVideo.id;
-        // Remove fields that cannot be reused directly
         delete newCreativeSpec.video_data.image_url; 
         delete newCreativeSpec.video_data.image_hash;
 
@@ -128,7 +110,7 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
             }
         );
 
-        // 5. Create the Ad
+        // 3. Create the Ad
         const ad = await account.createAd(
             [],
             {
@@ -145,6 +127,11 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         console.error('--- ERRO AO CRIAR ANÚNCIO ---');
         console.error(JSON.stringify(error.response ? error.response.data : error, null, 2));
         res.status(500).json({ error: 'Falha ao criar anúncio.', details: error.message });
+    } finally {
+        // 4. Clean up the temporary file
+        fs.unlink(tempFilePath, (err) => {
+            if (err) console.error('Erro ao deletar arquivo temporário:', err);
+        });
     }
 });
 
