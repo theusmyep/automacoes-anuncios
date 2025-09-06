@@ -124,7 +124,19 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const result = await response.json();
             if (!response.ok) {
-                throw new Error(result.details || 'Falha ao criar anúncio.');
+                // Tenta extrair a mensagem de erro detalhada da API do Facebook
+                let detailedError = result.details;
+                try {
+                    const fbError = JSON.parse(detailedError);
+                    if (fbError.error && fbError.error.error_user_msg) {
+                        detailedError = fbError.error.error_user_msg;
+                    } else if (fbError.error && fbError.error.message) {
+                        detailedError = fbError.error.message;
+                    }
+                } catch (e) {
+                    // Mantém o erro original se não for um JSON do Facebook
+                }
+                throw new Error(detailedError || 'Falha ao criar anúncio.');
             }
             log(`Anúncio criado com sucesso! ID: ${result.ad_id}`);
         } catch (error) {

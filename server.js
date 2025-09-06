@@ -18,6 +18,9 @@ const Campaign = bizSdk.Campaign;
 const AdSet = bizSdk.AdSet;
 const AdCreative = bizSdk.AdCreative;
 const Ad = bizSdk.Ad;
+const AdCreativeObjectStorySpec = bizSdk.AdCreativeObjectStorySpec;
+const AdCreativeVideoData = bizSdk.AdCreativeVideoData;
+
 if (accessToken) {
     bizSdk.FacebookAdsApi.init(accessToken);
 }
@@ -93,7 +96,7 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
 
     try {
         const { 'campaign-select': campaignId, 'ad-name': adName, 'account-select': accountId, 'creative-spec': creativeSpecJSON } = req.body;
-        const creativeSpec = JSON.parse(creativeSpecJSON);
+        const creativeSpecTemplate = JSON.parse(creativeSpecJSON);
 
         // 1. Manual Video Upload using Axios
         const form = new FormData();
@@ -126,12 +129,11 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         };
 
         let videoStatus = '';
-        const maxTries = 30; // 30 tries * 10 seconds = 5 minutes max wait time
+        const maxTries = 30; // 5 minutes max wait time
         let tries = 0;
         while (videoStatus !== 'ready' && tries < maxTries) {
             tries++;
             videoStatus = await checkVideoStatus(adVideoId);
-            console.log(`Video ${adVideoId} status: ${videoStatus}. Try #${tries}`);
             if (videoStatus === 'ready') break;
             if (videoStatus === 'error') throw new Error('Falha ao obter o status de processamento do vídeo.');
             await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
@@ -141,11 +143,20 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
             throw new Error('O processamento do vídeo demorou mais de 5 minutos.');
         }
 
-        // 3. Create Ad Creative by modifying the template
-        const newCreativeSpec = { ...creativeSpec };
-        newCreativeSpec.video_data.video_id = adVideoId;
-        delete newCreativeSpec.video_data.image_url; 
-        delete newCreativeSpec.video_data.image_hash;
+        // 3. Create a NEW, CLEAN Ad Creative
+        const newCreativeSpec = {
+            [AdCreativeObjectStorySpec.Fields.page_id]: creativeSpecTemplate.page_id,
+            [AdCreativeObjectStorySpec.Fields.video_data]: {
+                [AdCreativeVideoData.Fields.video_id]: adVideoId,
+                [AdCreativeVideoData.Fields.message]: creativeSpecTemplate.video_data.message || 'Confira!',
+                [AdCreativeVideoData.Fields.title]: creativeSpecTemplate.video_data.title || adName,
+                [AdCreativeVideoData.Fields.call_to_action]: creativeSpecTemplate.video_data.call_to_action,
+            }
+        };
+        
+        if (creativeSpecTemplate.instagram_actor_id) {
+            newCreativeSpec[AdCreativeObjectStorySpec.Fields.instagram_actor_id] = creativeSpecTemplate.instagram_actor_id;
+        }
 
         const account = new AdAccount(accountId);
         const creative = await account.createAdCreative(
