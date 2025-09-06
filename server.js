@@ -113,7 +113,35 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         );
         const adVideoId = uploadResponse.data.id;
 
-        // 2. Create Ad Creative by modifying the template
+        // 2. Poll for video processing status
+        const checkVideoStatus = async (videoId) => {
+            const url = `https://graph.facebook.com/v20.0/${videoId}?fields=status&access_token=${accessToken}`;
+            try {
+                const response = await axios.get(url);
+                return response.data.status.video_status;
+            } catch (error) {
+                console.error(`Error checking video status for ${videoId}:`, error.response ? error.response.data : error.message);
+                return 'error';
+            }
+        };
+
+        let videoStatus = '';
+        const maxTries = 30; // 30 tries * 10 seconds = 5 minutes max wait time
+        let tries = 0;
+        while (videoStatus !== 'ready' && tries < maxTries) {
+            tries++;
+            videoStatus = await checkVideoStatus(adVideoId);
+            console.log(`Video ${adVideoId} status: ${videoStatus}. Try #${tries}`);
+            if (videoStatus === 'ready') break;
+            if (videoStatus === 'error') throw new Error('Falha ao obter o status de processamento do vídeo.');
+            await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+        }
+
+        if (videoStatus !== 'ready') {
+            throw new Error('O processamento do vídeo demorou mais de 5 minutos.');
+        }
+
+        // 3. Create Ad Creative by modifying the template
         const newCreativeSpec = { ...creativeSpec };
         newCreativeSpec.video_data.video_id = adVideoId;
         delete newCreativeSpec.video_data.image_url; 
@@ -128,7 +156,7 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
             }
         );
 
-        // 3. Create the Ad
+        // 4. Create the Ad
         const ad = await account.createAd(
             [],
             {
@@ -147,7 +175,7 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         console.error(errorMessage);
         res.status(500).json({ error: 'Falha ao criar anúncio.', details: errorMessage });
     } finally {
-        // 4. Clean up the temporary file
+        // 5. Clean up the temporary file
         fs.unlink(tempFilePath, (err) => {
             if (err) console.error('Erro ao deletar arquivo temporário:', err);
         });
