@@ -116,6 +116,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const formData = new FormData(adForm);
         // Adiciona os dados do anúncio modelo ao formulário
         formData.append('creative-spec', JSON.stringify(creativeSpec));
+        // O FormData já pega os arquivos dos inputs 'creative-file' e 'thumbnail-file'
 
         try {
             const response = await fetch('/api/create-ad', {
