@@ -108,7 +108,10 @@ app.post('/api/create-ad', timeout('600s'), upload.fields(uploadFields), async (
         // 1. Upload Thumbnail to get image_hash
         const thumbForm = new FormData();
         thumbForm.append('access_token', accessToken);
-        thumbForm.append('source', fs.createReadStream(thumbnailFilePath));
+        thumbForm.append('source', fs.createReadStream(thumbnailFilePath), {
+            filename: req.files['thumbnail-file'][0].originalname,
+            contentType: req.files['thumbnail-file'][0].mimetype,
+        });
         const thumbResponse = await axios.post(`https://graph.facebook.com/v20.0/${accountId}/adimages`, thumbForm, { headers: thumbForm.getHeaders() });
         const imageHash = thumbResponse.data.images[Object.keys(thumbResponse.data.images)[0]].hash;
 
