@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const bizSdk = require('facebook-nodejs-business-sdk');
 const axios = require('axios');
 const FormData = require('form-data');
@@ -26,7 +27,7 @@ if (accessToken) {
 }
 
 // --- Multer setup for temporary local storage ---
-const upload = multer({ dest: 'temp_uploads/' });
+const upload = multer({ dest: os.tmpdir() });
 
 // --- API Routes ---
 app.get('/api/accounts', async (req, res) => {
