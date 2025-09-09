@@ -1,3 +1,4 @@
+// Versão final com webhook e upload de thumbnail
 document.addEventListener('DOMContentLoaded', () => {
     const loadingSection = document.getElementById('loading-section');
     const adCreationSection = document.getElementById('ad-creation-section');
