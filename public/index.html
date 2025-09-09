@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Criador de Anúncios</title>
+    <title>Criador de Anúncios em Massa</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
-        <h1>Criador de Anúncios</h1>
+        <h1>Criador de Anúncios em Massa</h1>
         <div id="loading-section">
             <p>Conectando com o Facebook e carregando contas...</p>
         </div>
@@ -19,18 +19,25 @@
                     <select id="account-select" name="account-select"></select>
                 </div>
                 <div class="form-group">
-                    <label for="campaign-select">1. Selecione a Campanha</label>
-                    <select id="campaign-select" name="campaign-select" required></select>
+                    <label for="campaign-select">1. Selecione uma ou mais Campanhas (Ctrl/Cmd + Clique)</label>
+                    <select id="campaign-select" name="campaign-select" required multiple size="5"></select>
                 </div>
                 <div class="form-group">
-                    <label for="ad-name">2. Nome do Anúncio</label>
-                    <input type="text" id="ad-name" name="ad-name" required>
+                    <label for="ad-name-prefix">2. Prefixo do Nome do Anúncio (ex: AD)</label>
+                    <input type="text" id="ad-name-prefix" name="ad-name-prefix" value="AD" required>
                 </div>
-                    <div class="form-group">
-                        <label for="creative-file">3. Vídeo do Criativo</label>
-                        <input type="file" id="creative-file" name="creative-file" accept="video/*" required>
-                    </div>
-                    <button type="submit">Criar Anúncio</button>
+                <div class="form-group">
+                    <label for="creative-files">3. Vídeos dos Criativos (selecione um ou mais)</label>
+                    <input type="file" id="creative-files" name="creative-files" accept="video/*" required multiple>
+                </div>
+                <div class="form-group">
+                    <label for="ad-status">4. Status do Anúncio</label>
+                    <select id="ad-status" name="ad-status">
+                        <option value="PAUSED" selected>Pausado</option>
+                        <option value="ACTIVE">Ativo</option>
+                    </select>
+                </div>
+                <button type="submit">Criar Anúncios</button>
             </form>
             <div class="progress-log">
                 <h3>Progresso:</h3>
