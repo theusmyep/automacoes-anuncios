@@ -5,7 +5,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const campaignSelect = document.getElementById('campaign-select');
     const logElement = document.getElementById('log');
     const adForm = document.getElementById('ad-form');
-    let creativeSpec = null; // Variável para armazenar os dados do anúncio modelo
 
     function log(message) {
         const timestamp = new Date().toLocaleTimeString();
@@ -66,8 +65,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     campaignSelect.appendChild(option);
                 });
                 log('Campanhas carregadas.');
-                // Após carregar as campanhas, busca os detalhes do último anúncio da primeira campanha
-                getLatestAdDetails(campaigns[0].id);
             } else {
                 log('Nenhuma campanha ativa encontrada para esta conta.');
             }
@@ -77,45 +74,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function getLatestAdDetails(adSetId) {
-        log(`Buscando detalhes do último anúncio para o conjunto ${adSetId}...`);
-        try {
-            const response = await fetch(`/api/latest-ad-details/${adSetId}`);
-            const data = await response.json();
-
-            if (!response.ok) {
-                creativeSpec = null; // Limpa se houver erro
-                throw new Error(data.error || 'Falha ao buscar detalhes do anúncio modelo.');
-            }
-            
-            creativeSpec = data.creative_spec;
-            log('Dados do anúncio modelo carregados com sucesso.');
-
-        } catch (error) {
-            log(`--- ERRO ---`);
-            log(error.toString());
-        }
-    }
-
-    // Event listener para quando o usuário troca de campanha
-    campaignSelect.addEventListener('change', (event) => {
-        const selectedAdSetId = event.target.value;
-        getLatestAdDetails(selectedAdSetId);
-    });
-
     adForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         
-        if (!creativeSpec) {
-            log('--- ERRO ---');
-            log('Não foi possível carregar os dados do anúncio modelo. Tente selecionar outra campanha ou verifique se ela possui anúncios.');
-            return;
-        }
-
         log('Iniciando criação do anúncio...');
         const formData = new FormData(adForm);
-        // Adiciona os dados do anúncio modelo ao formulário
-        formData.append('creative-spec', JSON.stringify(creativeSpec));
 
         try {
             const response = await fetch('/api/create-ad', {
@@ -124,21 +87,9 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const result = await response.json();
             if (!response.ok) {
-                // Tenta extrair a mensagem de erro detalhada da API do Facebook
-                let detailedError = result.details;
-                try {
-                    const fbError = JSON.parse(detailedError);
-                    if (fbError.error && fbError.error.error_user_msg) {
-                        detailedError = fbError.error.error_user_msg;
-                    } else if (fbError.error && fbError.error.message) {
-                        detailedError = fbError.error.message;
-                    }
-                } catch (e) {
-                    // Mantém o erro original se não for um JSON do Facebook
-                }
-                throw new Error(detailedError || 'Falha ao criar anúncio.');
+                throw new Error(result.error || 'Falha ao disparar o webhook.');
             }
-            log(`Anúncio criado com sucesso! ID: ${result.ad_id}`);
+            log(result.message);
         } catch (error) {
             log(`--- ERRO ---`);
             log(error.toString());
