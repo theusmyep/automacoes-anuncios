@@ -1,3 +1,4 @@
+// Versão final com upload manual de thumbnail
 require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
