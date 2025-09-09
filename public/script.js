@@ -1,3 +1,4 @@
+// Versão final simplificada (apenas vídeo)
 document.addEventListener('DOMContentLoaded', () => {
     const loadingSection = document.getElementById('loading-section');
     const adCreationSection = document.getElementById('ad-creation-section');
