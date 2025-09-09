@@ -20,11 +20,10 @@ const AdAccount = bizSdk.AdAccount;
 const AdSet = bizSdk.AdSet;
 const AdCreative = bizSdk.AdCreative;
 const Ad = bizSdk.Ad;
-const AdCreativeObjectStorySpec = bizSdk.AdCreativeObjectStorySpec;
-const AdCreativeVideoData = bizSdk.AdCreativeVideoData;
+const FacebookAdsApi = bizSdk.FacebookAdsApi;
 
 if (accessToken) {
-    bizSdk.FacebookAdsApi.init(accessToken);
+    FacebookAdsApi.init(accessToken);
 }
 
 // --- Minio Client Initialization ---
@@ -74,20 +73,21 @@ app.post('/api/create-ad', timeout('1200s'), upload.array('creative-files'), asy
                 try {
                     // 3. Fetch Campaign details to get page_id and instagram_actor_id
                     const adSet = new AdSet(campaignId);
-                    const campaign = await (await adSet.getCampaign(['promoted_object'])).getPromotedObject(['page_id', 'instagram_id']);
+                    const campaignData = await adSet.getCampaign(['promoted_object']);
+                    const promotedObject = await campaignData.getPromotedObject(['page_id', 'instagram_id']);
                     
                     // 4. Create a NEW, CLEAN Ad Creative
                     const newCreativeSpec = {
-                        [AdCreativeObjectStorySpec.Fields.page_id]: campaign.page_id,
-                        [AdCreativeObjectStorySpec.Fields.video_data]: {
-                            [AdCreativeVideoData.Fields.video_id]: adVideo.id,
-                            [AdCreativeVideoData.Fields.message]: 'Confira!',
-                            [AdCreativeVideoData.Fields.title]: adName,
-                            [AdCreativeVideoData.Fields.call_to_action]: { type: 'NO_BUTTON' },
+                        [bizSdk.AdCreativeObjectStorySpec.Fields.page_id]: promotedObject.page_id,
+                        [bizSdk.AdCreativeObjectStorySpec.Fields.video_data]: {
+                            [bizSdk.AdCreativeVideoData.Fields.video_id]: adVideo.id,
+                            [bizSdk.AdCreativeVideoData.Fields.message]: 'Confira!',
+                            [bizSdk.AdCreativeVideoData.Fields.title]: adName,
+                            [bizSdk.AdCreativeVideoData.Fields.call_to_action]: { type: 'NO_BUTTON' },
                         }
                     };
-                    if (campaign.instagram_id) {
-                        newCreativeSpec[AdCreativeObjectStorySpec.Fields.instagram_actor_id] = campaign.instagram_id;
+                    if (promotedObject.instagram_id) {
+                        newCreativeSpec[bizSdk.AdCreativeObjectStorySpec.Fields.instagram_actor_id] = promotedObject.instagram_id;
                     }
 
                     const creative = await account.createAdCreative({}, {
