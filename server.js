@@ -59,6 +59,12 @@ app.get('/api/campaigns/:accountId', async (req, res) => {
     }
 });
 
+app.get('/api/latest-ad-details/:adSetId', async (req, res) => {
+    // Esta rota é necessária para o frontend, mas a lógica de duplicação agora está no n8n.
+    // Retornamos um objeto vazio para evitar erros.
+    res.json({ creative_spec: {} });
+});
+
 // --- Rota Principal (envia apenas o vídeo para o n8n) ---
 app.post('/api/create-ad', upload.single('creative-file'), async (req, res) => {
     if (!req.file) {
