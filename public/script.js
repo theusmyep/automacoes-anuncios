@@ -1,4 +1,3 @@
-// Versão final com webhook e upload de thumbnail
 document.addEventListener('DOMContentLoaded', () => {
     const loadingSection = document.getElementById('loading-section');
     const adCreationSection = document.getElementById('ad-creation-section');
@@ -117,7 +116,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const formData = new FormData(adForm);
         // Adiciona os dados do anúncio modelo ao formulário
         formData.append('creative-spec', JSON.stringify(creativeSpec));
-        // O FormData já pega os arquivos dos inputs 'creative-file' e 'thumbnail-file'
 
         try {
             const response = await fetch('/api/create-ad', {
@@ -126,9 +124,21 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const result = await response.json();
             if (!response.ok) {
-                throw new Error(result.error || 'Falha ao disparar o webhook.');
+                // Tenta extrair a mensagem de erro detalhada da API do Facebook
+                let detailedError = result.details;
+                try {
+                    const fbError = JSON.parse(detailedError);
+                    if (fbError.error && fbError.error.error_user_msg) {
+                        detailedError = fbError.error.error_user_msg;
+                    } else if (fbError.error && fbError.error.message) {
+                        detailedError = fbError.error.message;
+                    }
+                } catch (e) {
+                    // Mantém o erro original se não for um JSON do Facebook
+                }
+                throw new Error(detailedError || 'Falha ao criar anúncio.');
             }
-            log(result.message);
+            log(`Anúncio criado com sucesso! ID: ${result.ad_id}`);
         } catch (error) {
             log(`--- ERRO ---`);
             log(error.toString());
