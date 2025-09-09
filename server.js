@@ -87,37 +87,53 @@ app.get('/api/latest-ad-details/:adSetId', async (req, res) => {
     }
 });
 
-app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ error: 'Nenhum vídeo enviado.' });
+const uploadFields = [
+    { name: 'creative-file', maxCount: 1 },
+    { name: 'thumbnail-file', maxCount: 1 }
+];
+
+app.post('/api/create-ad', timeout('600s'), upload.fields(uploadFields), async (req, res) => {
+    if (!req.files || !req.files['creative-file'] || !req.files['thumbnail-file']) {
+        return res.status(400).json({ error: 'Vídeo e thumbnail são obrigatórios.' });
     }
 
-    const videoFilePath = req.file.path;
+    const videoFilePath = req.files['creative-file'][0].path;
+    const thumbnailFilePath = req.files['thumbnail-file'][0].path;
 
     try {
         const { 'campaign-select': campaignId, 'ad-name': adName, 'account-select': accountId, 'creative-spec': creativeSpecJSON } = req.body;
         const creativeSpecTemplate = JSON.parse(creativeSpecJSON);
 
-        // 1. Upload Video to get video_id
+        // 1. Upload Thumbnail to get image_hash
+        const thumbForm = new FormData();
+        thumbForm.append('access_token', accessToken);
+        thumbForm.append('source', fs.createReadStream(thumbnailFilePath), {
+            filename: req.files['thumbnail-file'][0].originalname,
+            contentType: req.files['thumbnail-file'][0].mimetype,
+        });
+        const thumbResponse = await axios.post(`https://graph.facebook.com/v20.0/${accountId}/adimages`, thumbForm, { headers: thumbForm.getHeaders() });
+        const imageHash = thumbResponse.data.images[Object.keys(thumbResponse.data.images)[0]].hash;
+
+        // 2. Upload Video to get video_id
         const videoForm = new FormData();
         videoForm.append('access_token', accessToken);
-        videoForm.append('source', fs.createReadStream(videoFilePath), { filename: req.file.originalname, contentType: req.file.mimetype });
+        videoForm.append('source', fs.createReadStream(videoFilePath), { filename: req.files['creative-file'][0].originalname, contentType: req.files['creative-file'][0].mimetype });
         const videoResponse = await axios.post(`https://graph.facebook.com/v20.0/${accountId}/advideos`, videoForm, { headers: videoForm.getHeaders(), timeout: 600000 });
         const adVideoId = videoResponse.data.id;
 
-        // 2. Create Ad Creative using the template and new video
+        // 3. Create Ad Creative using the template and new assets
         const account = new AdAccount(accountId);
         const newCreativeSpec = { ...creativeSpecTemplate };
         newCreativeSpec.video_data.video_id = adVideoId;
+        newCreativeSpec.video_data.image_hash = imageHash;
         delete newCreativeSpec.video_data.image_url;
-        delete newCreativeSpec.video_data.image_hash;
 
         const creative = await account.createAdCreative({}, {
             [AdCreative.Fields.name]: 'Criativo - ' + adName,
             [AdCreative.Fields.object_story_spec]: newCreativeSpec
         });
 
-        // 3. Create the Ad
+        // 4. Create the Ad using a manual API call for better error handling
         const adCreationUrl = `https://graph.facebook.com/v20.0/${accountId}/ads`;
         const adCreationData = {
             name: adName,
@@ -136,8 +152,9 @@ app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), asyn
         console.error(errorMessage);
         res.status(500).json({ error: 'Falha ao criar anúncio.', details: errorMessage });
     } finally {
-        // 4. Clean up temporary file
+        // 5. Clean up temporary files
         fs.unlink(videoFilePath, (err) => { if (err) console.error('Erro ao deletar vídeo temporário:', err); });
+        fs.unlink(thumbnailFilePath, (err) => { if (err) console.error('Erro ao deletar thumbnail temporária:', err); });
     }
 });
 
