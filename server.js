@@ -26,15 +26,63 @@ if (accessToken) {
 // --- Multer setup for temporary local storage ---
 const upload = multer({ dest: os.tmpdir() });
 
-// --- API Routes (unchanged) ---
+// --- API Routes ---
 app.get('/api/accounts', async (req, res) => {
-    // ... (código existente para buscar contas)
+    if (!accessToken) {
+        return res.status(400).json({ error: 'Token de acesso não configurado.' });
+    }
+    try {
+        const me = new bizSdk.User('me');
+        const adAccounts = await me.getAdAccounts([AdAccount.Fields.name, AdAccount.Fields.id]);
+        res.json(adAccounts.map(acc => ({ id: acc.id, name: acc.name })));
+    } catch (error) {
+        console.error('--- ERRO AO BUSCAR CONTAS ---', JSON.stringify(error, null, 2));
+        res.status(500).json({ error: 'Falha ao buscar contas de anúncio.', details: error.message });
+    }
 });
+
 app.get('/api/campaigns/:accountId', async (req, res) => {
-    // ... (código existente para buscar campanhas)
+    try {
+        const { accountId } = req.params;
+        const account = new AdAccount(accountId);
+        const campaigns = await account.getCampaigns(
+            [bizSdk.Campaign.Fields.name, bizSdk.Campaign.Fields.promoted_object],
+            { effective_status: ['ACTIVE'] }
+        );
+        const campaignsData = campaigns.map(campaign => ({
+            id: campaign.id,
+            name: campaign.name,
+            page_id: campaign.promoted_object ? campaign.promoted_object.page_id : null
+        }));
+        res.json(campaignsData);
+    } catch (error) {
+        console.error('--- ERRO AO BUSCAR CAMPANHAS ---', JSON.stringify(error, null, 2));
+        res.status(500).json({ error: 'Falha ao buscar campanhas.', details: error.message });
+    }
 });
+
 app.get('/api/latest-ad-details/:adSetId', async (req, res) => {
-    // ... (código existente para buscar detalhes do último anúncio)
+    try {
+        const { adSetId } = req.params;
+        const adSet = new AdSet(adSetId);
+        const ads = await adSet.getAds(
+            ['id', 'name', 'creative{object_story_spec}'],
+            { limit: 1, date_preset: 'last_year' }
+        );
+
+        if (ads.length === 0) {
+            return res.status(404).json({ error: 'Nenhum anúncio encontrado neste conjunto para usar como modelo.' });
+        }
+        
+        const latestAd = ads[0];
+        res.json({
+            creative_spec: latestAd.creative.object_story_spec
+        });
+
+    } catch (error) {
+        console.error('--- ERRO AO BUSCAR DETALHES DO ÚLTIMO ANÚNCIO ---', JSON.stringify(error.response ? error.response.data : error, null, 2));
+        res.status(500).json({ error: 'Falha ao buscar detalhes do último anúncio.', details: error.message });
+    }
 });
 
 // --- Rota Principal (agora envia para o n8n) ---
