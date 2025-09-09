@@ -18,6 +18,9 @@ const accessToken = process.env.FACEBOOK_ACCESS_TOKEN;
 const AdAccount = bizSdk.AdAccount;
 const Campaign = bizSdk.Campaign;
 const AdSet = bizSdk.AdSet;
+const AdCreative = bizSdk.AdCreative;
+const Ad = bizSdk.Ad;
+
 if (accessToken) {
     bizSdk.FacebookAdsApi.init(accessToken);
 }
@@ -45,12 +48,13 @@ app.get('/api/campaigns/:accountId', async (req, res) => {
         const { accountId } = req.params;
         const account = new AdAccount(accountId);
         const campaigns = await account.getCampaigns(
-            [Campaign.Fields.name],
+            [Campaign.Fields.name, Campaign.Fields.promoted_object],
             { effective_status: ['ACTIVE'] }
         );
         const campaignsData = campaigns.map(campaign => ({
             id: campaign.id,
             name: campaign.name,
+            page_id: campaign.promoted_object ? campaign.promoted_object.page_id : null
         }));
         res.json(campaignsData);
     } catch (error) {
@@ -59,33 +63,82 @@ app.get('/api/campaigns/:accountId', async (req, res) => {
     }
 });
 
-// --- Rota Principal (envia apenas o vídeo para o n8n) ---
-app.post('/api/create-ad', upload.single('creative-file'), async (req, res) => {
+app.get('/api/latest-ad-details/:adSetId', async (req, res) => {
+    try {
+        const { adSetId } = req.params;
+        const adSet = new AdSet(adSetId);
+        const ads = await adSet.getAds(
+            ['id', 'name', 'creative{object_story_spec}'],
+            { limit: 1, date_preset: 'last_year' }
+        );
+
+        if (ads.length === 0) {
+            return res.status(404).json({ error: 'Nenhum anúncio encontrado neste conjunto para usar como modelo.' });
+        }
+        
+        const latestAd = ads[0];
+        res.json({
+            creative_spec: latestAd.creative.object_story_spec
+        });
+
+    } catch (error) {
+        console.error('--- ERRO AO BUSCAR DETALHES DO ÚLTIMO ANÚNCIO ---', JSON.stringify(error.response ? error.response.data : error, null, 2));
+        res.status(500).json({ error: 'Falha ao buscar detalhes do último anúncio.', details: error.message });
+    }
+});
+
+app.post('/api/create-ad', timeout('600s'), upload.single('creative-file'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: 'Nenhum vídeo enviado.' });
     }
 
+    const videoFilePath = req.file.path;
+
     try {
-        const { 'campaign-select': campaignId, 'ad-name': adName, 'account-select': accountId } = req.body;
-        const n8nWebhookUrl = 'https://auto.theusm.com.br/webhook/subir-anuncios-geral';
+        const { 'campaign-select': campaignId, 'ad-name': adName, 'account-select': accountId, 'creative-spec': creativeSpecJSON } = req.body;
+        const creativeSpecTemplate = JSON.parse(creativeSpecJSON);
 
-        const form = new FormData();
-        form.append('accountId', accountId);
-        form.append('campaignId', campaignId);
-        form.append('adName', adName);
-        form.append('video', fs.createReadStream(req.file.path), { filename: req.file.originalname });
+        // 1. Upload Video to get video_id and request automatic thumbnail
+        const videoForm = new FormData();
+        videoForm.append('access_token', accessToken);
+        videoForm.append('thumb_scrape_method', 'default_image');
+        videoForm.append('source', fs.createReadStream(videoFilePath), { filename: req.file.originalname, contentType: req.file.mimetype });
+        const videoResponse = await axios.post(`https://graph.facebook.com/v20.0/${accountId}/advideos`, videoForm, { headers: videoForm.getHeaders(), timeout: 600000 });
+        const adVideoId = videoResponse.data.id;
 
-        // Dispara o webhook do n8n
-        await axios.post(n8nWebhookUrl, form, { headers: form.getHeaders() });
+        // 2. Create Ad Creative using the template and new video
+        const account = new AdAccount(accountId);
+        const newCreativeSpec = { ...creativeSpecTemplate };
+        newCreativeSpec.video_data.video_id = adVideoId;
+        delete newCreativeSpec.video_data.image_url;
+        delete newCreativeSpec.video_data.image_hash;
 
-        res.json({ message: 'Processamento iniciado. O anúncio será criado em segundo plano pelo n8n.' });
+        const creative = await account.createAdCreative({}, {
+            [AdCreative.Fields.name]: 'Criativo - ' + adName,
+            [AdCreative.Fields.object_story_spec]: newCreativeSpec
+        });
+
+        // 3. Create the Ad
+        const adCreationUrl = `https://graph.facebook.com/v20.0/${accountId}/ads`;
+        const adCreationData = {
+            name: adName,
+            adset_id: campaignId,
+            creative: { creative_id: creative.id },
+            status: 'PAUSED',
+            access_token: accessToken,
+        };
+        const adResponse = await axios.post(adCreationUrl, adCreationData);
+
+        res.json({ message: 'Anúncio criado com sucesso!', ad_id: adResponse.data.id });
 
     } catch (error) {
-        console.error('--- ERRO AO DISPARAR WEBHOOK ---', error.message);
-        res.status(500).json({ error: 'Falha ao iniciar o processo de criação do anúncio.' });
+        console.error('--- ERRO AO CRIAR ANÚNCIO ---');
+        const errorMessage = error.response ? JSON.stringify(error.response.data, null, 2) : error.message;
+        console.error(errorMessage);
+        res.status(500).json({ error: 'Falha ao criar anúncio.', details: errorMessage });
     } finally {
-        // Limpa o arquivo temporário
-        fs.unlink(req.file.path, () => {});
+        // 4. Clean up temporary file
+        fs.unlink(videoFilePath, (err) => { if (err) console.error('Erro ao deletar vídeo temporário:', err); });
     }
 });
 
