@@ -10,14 +10,13 @@ const FormData = require('form-data');
 const timeout = require('connect-timeout');
 
 const app = express();
-app.use(express.json()); // Middleware to parse JSON bodies
+app.use(express.json());
 const port = process.env.PORT || 8081;
 
 // --- Facebook SDK Initialization ---
 const accessToken = process.env.FACEBOOK_ACCESS_TOKEN;
 const AdAccount = bizSdk.AdAccount;
-const AdCreative = bizSdk.AdCreative;
-const Ad = bizSdk.Ad;
+const Campaign = bizSdk.Campaign;
 const AdSet = bizSdk.AdSet;
 if (accessToken) {
     bizSdk.FacebookAdsApi.init(accessToken);
@@ -46,13 +45,12 @@ app.get('/api/campaigns/:accountId', async (req, res) => {
         const { accountId } = req.params;
         const account = new AdAccount(accountId);
         const campaigns = await account.getCampaigns(
-            [bizSdk.Campaign.Fields.name, bizSdk.Campaign.Fields.promoted_object],
+            [Campaign.Fields.name],
             { effective_status: ['ACTIVE'] }
         );
         const campaignsData = campaigns.map(campaign => ({
             id: campaign.id,
             name: campaign.name,
-            page_id: campaign.promoted_object ? campaign.promoted_object.page_id : null
         }));
         res.json(campaignsData);
     } catch (error) {
@@ -61,38 +59,10 @@ app.get('/api/campaigns/:accountId', async (req, res) => {
     }
 });
 
-app.get('/api/latest-ad-details/:adSetId', async (req, res) => {
-    try {
-        const { adSetId } = req.params;
-        const adSet = new AdSet(adSetId);
-        const ads = await adSet.getAds(
-            ['id', 'name', 'creative{object_story_spec}'],
-            { limit: 1, date_preset: 'last_year' }
-        );
-
-        if (ads.length === 0) {
-            return res.status(404).json({ error: 'Nenhum anúncio encontrado neste conjunto para usar como modelo.' });
-        }
-        
-        const latestAd = ads[0];
-        res.json({
-            creative_spec: latestAd.creative.object_story_spec
-        });
-
-    } catch (error) {
-        console.error('--- ERRO AO BUSCAR DETALHES DO ÚLTIMO ANÚNCIO ---', JSON.stringify(error.response ? error.response.data : error, null, 2));
-        res.status(500).json({ error: 'Falha ao buscar detalhes do último anúncio.', details: error.message });
-    }
-});
-
-// --- Rota Principal (agora envia para o n8n) ---
-const uploadFields = [
-    { name: 'creative-file', maxCount: 1 },
-    { name: 'thumbnail-file', maxCount: 1 }
-];
-app.post('/api/create-ad', upload.fields(uploadFields), async (req, res) => {
-    if (!req.files || !req.files['creative-file'] || !req.files['thumbnail-file']) {
-        return res.status(400).json({ error: 'Vídeo e thumbnail são obrigatórios.' });
+// --- Rota Principal (envia apenas o vídeo para o n8n) ---
+app.post('/api/create-ad', upload.single('creative-file'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'Nenhum vídeo enviado.' });
     }
 
     try {
@@ -103,11 +73,10 @@ app.post('/api/create-ad', upload.fields(uploadFields), async (req, res) => {
         form.append('accountId', accountId);
         form.append('campaignId', campaignId);
         form.append('adName', adName);
-        form.append('video', fs.createReadStream(req.files['creative-file'][0].path), { filename: req.files['creative-file'][0].originalname });
-        form.append('thumbnail', fs.createReadStream(req.files['thumbnail-file'][0].path), { filename: req.files['thumbnail-file'][0].originalname });
+        form.append('video', fs.createReadStream(req.file.path), { filename: req.file.originalname });
 
-        // Dispara o webhook do n8n e não espera por uma resposta
-        axios.post(n8nWebhookUrl, form, { headers: form.getHeaders() });
+        // Dispara o webhook do n8n
+        await axios.post(n8nWebhookUrl, form, { headers: form.getHeaders() });
 
         res.json({ message: 'Processamento iniciado. O anúncio será criado em segundo plano pelo n8n.' });
 
@@ -115,49 +84,10 @@ app.post('/api/create-ad', upload.fields(uploadFields), async (req, res) => {
         console.error('--- ERRO AO DISPARAR WEBHOOK ---', error.message);
         res.status(500).json({ error: 'Falha ao iniciar o processo de criação do anúncio.' });
     } finally {
-        // Limpa os arquivos temporários
-        fs.unlink(req.files['creative-file'][0].path, () => {});
-        fs.unlink(req.files['thumbnail-file'][0].path, () => {});
+        // Limpa o arquivo temporário
+        fs.unlink(req.file.path, () => {});
     }
 });
-
-// --- Webhook para o n8n chamar de volta ---
-app.post('/webhook/n8n-callback', async (req, res) => {
-    try {
-        const { videoId, imageHash, accountId, campaignId, adName } = req.body;
-
-        // Lógica de duplicação e criação do anúncio (que já sabemos que funciona)
-        const account = new AdAccount(accountId);
-        const adSet = new AdSet(campaignId);
-        const ads = await adSet.getAds(['creative{object_story_spec}'], { limit: 1 });
-        const creativeSpecTemplate = ads[0].creative.object_story_spec;
-
-        const newCreativeSpec = { ...creativeSpecTemplate };
-        newCreativeSpec.video_data.video_id = videoId;
-        newCreativeSpec.video_data.image_hash = imageHash;
-        delete newCreativeSpec.video_data.image_url;
-
-        const creative = await account.createAdCreative({}, {
-            name: 'Criativo - ' + adName,
-            object_story_spec: newCreativeSpec
-        });
-
-        await account.createAd([], {
-            name: adName,
-            adset_id: campaignId,
-            creative: { creative_id: creative.id },
-            status: 'PAUSED',
-        });
-
-        console.log(`Anúncio ${adName} criado com sucesso via callback.`);
-        res.status(200).send('Callback recebido e processado.');
-
-    } catch (error) {
-        console.error('--- ERRO NO WEBHOOK CALLBACK ---', error.response ? error.response.data : error.message);
-        res.status(500).send('Erro ao processar o callback.');
-    }
-});
-
 
 // --- Static Files & Fallback ---
 app.use(express.static(path.join(__dirname, 'public')));
