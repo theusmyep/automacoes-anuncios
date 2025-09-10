@@ -29,8 +29,9 @@ if (accessToken) {
 
 // --- Minio Client Initialization ---
 const minioClient = new Minio.Client({
-    endPoint: process.env.MINIO_ENDPOINT,
-    useSSL: process.env.MINIO_USE_SSL === 'true',
+    endPoint: 's3.theusm.com.br',
+    port: 9000,
+    useSSL: true,
     accessKey: process.env.MINIO_ACCESS_KEY,
     secretKey: process.env.MINIO_SECRET_KEY
 });
