@@ -7,6 +7,7 @@ const os = require('os');
 const bizSdk = require('facebook-nodejs-business-sdk');
 const axios = require('axios');
 const FormData = require('form-data');
+const Minio = require('minio');
 const timeout = require('connect-timeout');
 
 const app = express();
@@ -19,11 +20,22 @@ const AdAccount = bizSdk.AdAccount;
 const AdSet = bizSdk.AdSet;
 const AdCreative = bizSdk.AdCreative;
 const Ad = bizSdk.Ad;
+const AdCreativeObjectStorySpec = bizSdk.AdCreativeObjectStorySpec;
+const AdCreativeVideoData = bizSdk.AdCreativeVideoData;
 const FacebookAdsApi = bizSdk.FacebookAdsApi;
 
 if (accessToken) {
     FacebookAdsApi.init(accessToken);
 }
+
+// --- Minio Client Initialization ---
+const minioClient = new Minio.Client({
+    endPoint: process.env.MINIO_ENDPOINT,
+    useSSL: process.env.MINIO_USE_SSL === 'true',
+    accessKey: process.env.MINIO_ACCESS_KEY,
+    secretKey: process.env.MINIO_SECRET_KEY
+});
+const bucketName = process.env.MINIO_BUCKET_NAME;
 
 // --- Multer setup for temporary local storage ---
 const upload = multer({ dest: os.tmpdir() });
@@ -47,36 +59,45 @@ app.post('/api/create-ad', timeout('1200s'), upload.array('creative-files'), asy
         for (const file of files) {
             const adName = `${adNamePrefix} - ${path.parse(file.originalname).name}`;
             
-            // 1. Upload Video directly to Facebook
-            const videoForm = new FormData();
-            videoForm.append('access_token', accessToken);
-            videoForm.append('source', fs.createReadStream(file.path), { filename: file.originalname, contentType: file.mimetype });
-            const videoResponse = await axios.post(`https://graph.facebook.com/v20.0/${accountId}/advideos`, videoForm, { headers: videoForm.getHeaders(), timeout: 600000 });
-            const adVideoId = videoResponse.data.id;
+            // 1. Upload Video to Minio
+            const videoFileName = `${Date.now()}-${file.originalname}`;
+            await minioClient.putObject(bucketName, videoFileName, fs.createReadStream(file.path), file.size);
+            const videoPublicUrl = `https://${process.env.MINIO_ENDPOINT}/${bucketName}/${videoFileName}`;
+
+            // 2. Create Ad Video in Facebook
+            const account = new AdAccount(accountId);
+            const adVideo = await account.createAdVideo([], {
+                [bizSdk.AdVideo.Fields.file_url]: videoPublicUrl,
+                [bizSdk.AdVideo.Fields.name]: adName,
+            });
 
             for (const campaignId of campaignsToProcess) {
                 try {
-                    // 2. Fetch a valid creative spec to use as a template
+                    // 3. Fetch Campaign details to get page_id and instagram_actor_id
                     const adSet = new AdSet(campaignId);
-                    const ads = await adSet.getAds(['creative{object_story_spec}'], { limit: 1 });
-                    if (ads.length === 0) {
-                        throw new Error(`Nenhum anúncio modelo encontrado no conjunto ${campaignId}.`);
+                    const campaignData = await adSet.getCampaign(['promoted_object']);
+                    const promotedObject = await campaignData.getPromotedObject(['page_id', 'instagram_id']);
+                    
+                    // 4. Create a NEW, CLEAN Ad Creative
+                    const newCreativeSpec = {
+                        [AdCreativeObjectStorySpec.Fields.page_id]: promotedObject.page_id,
+                        [AdCreativeObjectStorySpec.Fields.video_data]: {
+                            [AdCreativeVideoData.Fields.video_id]: adVideo.id,
+                            [AdCreativeVideoData.Fields.message]: 'Confira!',
+                            [AdCreativeVideoData.Fields.title]: adName,
+                            [AdCreativeVideoData.Fields.call_to_action]: { type: 'NO_BUTTON' },
+                        }
+                    };
+                    if (promotedObject.instagram_id) {
+                        newCreativeSpec[AdCreativeObjectStorySpec.Fields.instagram_actor_id] = promotedObject.instagram_id;
                     }
-                    const creativeSpecTemplate = ads[0].creative.object_story_spec;
-
-                    // 3. Create Ad Creative
-                    const account = new AdAccount(accountId);
-                    const newCreativeSpec = { ...creativeSpecTemplate };
-                    newCreativeSpec.video_data.video_id = adVideoId;
-                    delete newCreativeSpec.video_data.image_url;
-                    delete newCreativeSpec.video_data.image_hash;
 
                     const creative = await account.createAdCreative({}, {
                         [AdCreative.Fields.name]: 'Criativo - ' + adName,
                         [AdCreative.Fields.object_story_spec]: newCreativeSpec
                     });
 
-                    // 4. Create the Ad
+                    // 5. Create the Ad
                     const adCreationUrl = `https://graph.facebook.com/v20.0/${accountId}/ads`;
                     const adCreationData = {
                         name: adName,
@@ -104,7 +125,7 @@ app.post('/api/create-ad', timeout('1200s'), upload.array('creative-files'), asy
         console.error('--- ERRO GERAL AO CRIAR ANÚNCIOS ---', error.message);
         res.status(500).json({ error: 'Falha geral no processo.', details: error.message });
     } finally {
-        // 5. Clean up temporary files
+        // 6. Clean up temporary files
         files.forEach(file => fs.unlink(file.path, () => {}));
     }
 });
