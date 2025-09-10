@@ -141,10 +141,11 @@ app.post('/api/create-ad', timeout('1200s'), upload.array('creative-files'), asy
                     delete newCreativeSpec.video_data.image_url;
                     delete newCreativeSpec.video_data.image_hash;
 
-                    const creative = await account.createAdCreative({}, {
-                        [AdCreative.Fields.name]: 'Criativo - ' + adName,
-                        [AdCreative.Fields.object_story_spec]: newCreativeSpec
-                    });
+        console.log('Criando criativo com o spec:', JSON.stringify(newCreativeSpec, null, 2));
+        const creative = await account.createAdCreative({}, {
+            [AdCreative.Fields.name]: 'Criativo - ' + adName,
+            [AdCreative.Fields.object_story_spec]: newCreativeSpec
+        });
 
                     // 5. Create the Ad
                     const adCreationUrl = `https://graph.facebook.com/v20.0/${accountId}/ads`;
