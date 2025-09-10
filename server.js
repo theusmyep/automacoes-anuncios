@@ -7,7 +7,6 @@ const os = require('os');
 const bizSdk = require('facebook-nodejs-business-sdk');
 const axios = require('axios');
 const FormData = require('form-data');
-const Minio = require('minio');
 const timeout = require('connect-timeout');
 
 const app = express();
@@ -26,16 +25,6 @@ const User = bizSdk.User;
 if (accessToken) {
     FacebookAdsApi.init(accessToken);
 }
-
-// --- Minio Client Initialization ---
-const minioClient = new Minio.Client({
-    endPoint: 's3.theusm.com.br',
-    port: 9000,
-    useSSL: true,
-    accessKey: process.env.MINIO_ACCESS_KEY,
-    secretKey: process.env.MINIO_SECRET_KEY
-});
-const bucketName = process.env.MINIO_BUCKET_NAME;
 
 // --- Multer setup for temporary local storage ---
 const upload = multer({ dest: os.tmpdir() });
@@ -100,7 +89,7 @@ app.get('/api/latest-ad-details/:adSetId', async (req, res) => {
 });
 
 const uploadFields = [
-    { name: 'creative-file', maxCount: 1 },
+    { name: 'creative-files', maxCount: 1 },
     { name: 'thumbnail-file', maxCount: 1 }
 ];
 
@@ -128,24 +117,19 @@ app.post('/api/create-ad', timeout('1200s'), upload.fields(uploadFields), async 
         const thumbResponse = await axios.post(`https://graph.facebook.com/v20.0/${accountId}/adimages`, thumbForm, { headers: thumbForm.getHeaders() });
         const imageHash = thumbResponse.data.images[Object.keys(thumbResponse.data.images)[0]].hash;
 
-        // 2. Upload Video to Minio
-        const videoFileName = `${Date.now()}-${req.files['creative-file'][0].originalname}`;
-        await minioClient.putObject(bucketName, videoFileName, fs.createReadStream(videoFilePath), req.files['creative-file'][0].size);
-        const videoPublicUrl = `https://${process.env.MINIO_ENDPOINT}/${bucketName}/${videoFileName}`;
-
-        // 3. Create Ad Video in Facebook
-        const account = new AdAccount(accountId);
-        const adVideo = await account.createAdVideo([], {
-            [bizSdk.AdVideo.Fields.file_url]: videoPublicUrl,
-            [bizSdk.AdVideo.Fields.name]: adName,
-        });
+        // 2. Upload Video to get video_id
+        const videoForm = new FormData();
+        videoForm.append('access_token', accessToken);
+        videoForm.append('source', fs.createReadStream(videoFilePath), { filename: req.files['creative-file'][0].originalname, contentType: req.files['creative-file'][0].mimetype });
+        const videoResponse = await axios.post(`https://graph.facebook.com/v20.0/${accountId}/advideos`, videoForm, { headers: videoForm.getHeaders(), timeout: 600000 });
+        const adVideoId = videoResponse.data.id;
 
         let createdAds = [];
         let errors = [];
 
         for (const campaignId of campaignsToProcess) {
             try {
-                // 4. Fetch a valid creative spec to use as a template
+                // 3. Fetch a valid creative spec to use as a template
                 const adSet = new AdSet(campaignId);
                 const ads = await adSet.getAds(['creative{object_story_spec}'], { limit: 1 });
                 if (ads.length === 0) {
@@ -153,9 +137,10 @@ app.post('/api/create-ad', timeout('1200s'), upload.fields(uploadFields), async 
                 }
                 const creativeSpecTemplate = ads[0].creative.object_story_spec;
 
-                // 5. Create Ad Creative
+                // 4. Create Ad Creative
+                const account = new AdAccount(accountId);
                 const newCreativeSpec = { ...creativeSpecTemplate };
-                newCreativeSpec.video_data.video_id = adVideo.id;
+                newCreativeSpec.video_data.video_id = adVideoId;
                 newCreativeSpec.video_data.image_hash = imageHash;
                 delete newCreativeSpec.video_data.image_url;
 
@@ -164,7 +149,7 @@ app.post('/api/create-ad', timeout('1200s'), upload.fields(uploadFields), async 
                     [AdCreative.Fields.object_story_spec]: newCreativeSpec
                 });
 
-                // 6. Create the Ad
+                // 5. Create the Ad
                 const adCreationUrl = `https://graph.facebook.com/v20.0/${accountId}/ads`;
                 const adCreationData = {
                     name: adName,
@@ -191,7 +176,7 @@ app.post('/api/create-ad', timeout('1200s'), upload.fields(uploadFields), async 
         console.error('--- ERRO GERAL AO CRIAR ANÚNCIOS ---', error.message);
         res.status(500).json({ error: 'Falha geral no processo.', details: error.message });
     } finally {
-        // 7. Clean up temporary files
+        // 6. Clean up temporary files
         fs.unlink(videoFilePath, () => {});
         fs.unlink(thumbnailFilePath, () => {});
     }
