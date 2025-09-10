@@ -145,6 +145,7 @@ app.post('/api/create-ad', timeout('1200s'), upload.fields(uploadFields), async 
                 delete newCreativeSpec.video_data.image_url;
 
         console.log('Criando criativo com o spec:', JSON.stringify(newCreativeSpec, null, 2));
+        console.log('Criando criativo com o spec:', JSON.stringify(newCreativeSpec, null, 2));
         const creative = await account.createAdCreative({}, {
             [AdCreative.Fields.name]: 'Criativo - ' + adName,
             [AdCreative.Fields.object_story_spec]: newCreativeSpec
