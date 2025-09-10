@@ -20,9 +20,8 @@ const AdAccount = bizSdk.AdAccount;
 const AdSet = bizSdk.AdSet;
 const AdCreative = bizSdk.AdCreative;
 const Ad = bizSdk.Ad;
-const AdCreativeObjectStorySpec = bizSdk.AdCreativeObjectStorySpec;
-const AdCreativeVideoData = bizSdk.AdCreativeVideoData;
 const FacebookAdsApi = bizSdk.FacebookAdsApi;
+const User = bizSdk.User;
 
 if (accessToken) {
     FacebookAdsApi.init(accessToken);
@@ -41,77 +40,143 @@ const bucketName = process.env.MINIO_BUCKET_NAME;
 const upload = multer({ dest: os.tmpdir() });
 
 // --- API Routes ---
-// ... (as rotas GET permanecem as mesmas)
+app.get('/api/accounts', async (req, res) => {
+    if (!accessToken) {
+        return res.status(400).json({ error: 'Token de acesso não configurado.' });
+    }
+    try {
+        const me = new User('me');
+        const adAccounts = await me.getAdAccounts([AdAccount.Fields.name, AdAccount.Fields.id]);
+        res.json(adAccounts.map(acc => ({ id: acc.id, name: acc.name })));
+    } catch (error) {
+        console.error('--- ERRO AO BUSCAR CONTAS ---', JSON.stringify(error, null, 2));
+        res.status(500).json({ error: 'Falha ao buscar contas de anúncio.', details: error.message });
+    }
+});
 
-app.post('/api/create-ad', timeout('1200s'), upload.array('creative-files'), async (req, res) => {
-    if (!req.files || req.files.length === 0) {
-        return res.status(400).json({ error: 'Nenhum vídeo enviado.' });
+app.get('/api/campaigns/:accountId', async (req, res) => {
+    try {
+        const { accountId } = req.params;
+        const account = new AdAccount(accountId);
+        const campaigns = await account.getCampaigns(
+            [bizSdk.Campaign.Fields.name, bizSdk.Campaign.Fields.promoted_object],
+            { effective_status: ['ACTIVE'] }
+        );
+        const campaignsData = campaigns.map(campaign => ({
+            id: campaign.id,
+            name: campaign.name,
+            page_id: campaign.promoted_object ? campaign.promoted_object.page_id : null
+        }));
+        res.json(campaignsData);
+    } catch (error) {
+        console.error('--- ERRO AO BUSCAR CAMPANHAS ---', JSON.stringify(error, null, 2));
+        res.status(500).json({ error: 'Falha ao buscar campanhas.', details: error.message });
+    }
+});
+
+app.get('/api/latest-ad-details/:adSetId', async (req, res) => {
+    try {
+        const { adSetId } = req.params;
+        const adSet = new AdSet(adSetId);
+        const ads = await adSet.getAds(
+            ['id', 'name', 'creative{object_story_spec}'],
+            { limit: 1, date_preset: 'last_year' }
+        );
+
+        if (ads.length === 0) {
+            return res.status(404).json({ error: 'Nenhum anúncio encontrado neste conjunto para usar como modelo.' });
+        }
+        
+        const latestAd = ads[0];
+        res.json({
+            creative_spec: latestAd.creative.object_story_spec
+        });
+
+    } catch (error) {
+        console.error('--- ERRO AO BUSCAR DETALHES DO ÚLTIMO ANÚNCIO ---', JSON.stringify(error.response ? error.response.data : error, null, 2));
+        res.status(500).json({ error: 'Falha ao buscar detalhes do último anúncio.', details: error.message });
+    }
+});
+
+const uploadFields = [
+    { name: 'creative-file', maxCount: 1 },
+    { name: 'thumbnail-file', maxCount: 1 }
+];
+
+app.post('/api/create-ad', timeout('1200s'), upload.fields(uploadFields), async (req, res) => {
+    if (!req.files || !req.files['creative-file'] || !req.files['thumbnail-file']) {
+        return res.status(400).json({ error: 'Vídeo e thumbnail são obrigatórios.' });
     }
 
-    const files = req.files;
-    let createdAds = [];
-    let errors = [];
+    const videoFilePath = req.files['creative-file'][0].path;
+    const thumbnailFilePath = req.files['thumbnail-file'][0].path;
 
     try {
         const { 'campaign-select': campaignIds, 'ad-name-prefix': adNamePrefix, 'account-select': accountId, 'ad-status': adStatus } = req.body;
         const campaignsToProcess = Array.isArray(campaignIds) ? campaignIds : [campaignIds];
 
-        for (const file of files) {
-            const adName = `${adNamePrefix} - ${path.parse(file.originalname).name}`;
-            
-            // 1. Upload Video to Minio
-            const videoFileName = `${Date.now()}-${file.originalname}`;
-            await minioClient.putObject(bucketName, videoFileName, fs.createReadStream(file.path), file.size);
-            const videoPublicUrl = `https://${process.env.MINIO_ENDPOINT}/${bucketName}/${videoFileName}`;
+        const adName = `${adNamePrefix} - ${path.parse(req.files['creative-file'][0].originalname).name}`;
+        
+        // 1. Upload Thumbnail to get image_hash
+        const thumbForm = new FormData();
+        thumbForm.append('access_token', accessToken);
+        thumbForm.append('source', fs.createReadStream(thumbnailFilePath), {
+            filename: req.files['thumbnail-file'][0].originalname,
+            contentType: req.files['thumbnail-file'][0].mimetype,
+        });
+        const thumbResponse = await axios.post(`https://graph.facebook.com/v20.0/${accountId}/adimages`, thumbForm, { headers: thumbForm.getHeaders() });
+        const imageHash = thumbResponse.data.images[Object.keys(thumbResponse.data.images)[0]].hash;
 
-            // 2. Create Ad Video in Facebook
-            const account = new AdAccount(accountId);
-            const adVideo = await account.createAdVideo([], {
-                [bizSdk.AdVideo.Fields.file_url]: videoPublicUrl,
-                [bizSdk.AdVideo.Fields.name]: adName,
-            });
+        // 2. Upload Video to Minio
+        const videoFileName = `${Date.now()}-${req.files['creative-file'][0].originalname}`;
+        await minioClient.putObject(bucketName, videoFileName, fs.createReadStream(videoFilePath), req.files['creative-file'][0].size);
+        const videoPublicUrl = `https://${process.env.MINIO_ENDPOINT}/${bucketName}/${videoFileName}`;
 
-            for (const campaignId of campaignsToProcess) {
-                try {
-                    // 3. Fetch Campaign details to get page_id and instagram_actor_id
-                    const adSet = new AdSet(campaignId);
-                    const campaignData = await adSet.getCampaign(['promoted_object']);
-                    const promotedObject = await campaignData.getPromotedObject(['page_id', 'instagram_id']);
-                    
-                    // 4. Create a NEW, CLEAN Ad Creative
-                    const newCreativeSpec = {
-                        [AdCreativeObjectStorySpec.Fields.page_id]: promotedObject.page_id,
-                        [AdCreativeObjectStorySpec.Fields.video_data]: {
-                            [AdCreativeVideoData.Fields.video_id]: adVideo.id,
-                            [AdCreativeVideoData.Fields.message]: 'Confira!',
-                            [AdCreativeVideoData.Fields.title]: adName,
-                            [AdCreativeVideoData.Fields.call_to_action]: { type: 'NO_BUTTON' },
-                        }
-                    };
-                    if (promotedObject.instagram_id) {
-                        newCreativeSpec[AdCreativeObjectStorySpec.Fields.instagram_actor_id] = promotedObject.instagram_id;
-                    }
+        // 3. Create Ad Video in Facebook
+        const account = new AdAccount(accountId);
+        const adVideo = await account.createAdVideo([], {
+            [bizSdk.AdVideo.Fields.file_url]: videoPublicUrl,
+            [bizSdk.AdVideo.Fields.name]: adName,
+        });
 
-                    const creative = await account.createAdCreative({}, {
-                        [AdCreative.Fields.name]: 'Criativo - ' + adName,
-                        [AdCreative.Fields.object_story_spec]: newCreativeSpec
-                    });
+        let createdAds = [];
+        let errors = [];
 
-                    // 5. Create the Ad
-                    const adCreationUrl = `https://graph.facebook.com/v20.0/${accountId}/ads`;
-                    const adCreationData = {
-                        name: adName,
-                        adset_id: campaignId,
-                        creative: { creative_id: creative.id },
-                        status: adStatus,
-                        access_token: accessToken,
-                    };
-                    const adResponse = await axios.post(adCreationUrl, adCreationData);
-                    createdAds.push(adResponse.data.id);
-
-                } catch (campaignError) {
-                    errors.push(`Falha na campanha ${campaignId} para o vídeo ${file.originalname}: ${campaignError.message}`);
+        for (const campaignId of campaignsToProcess) {
+            try {
+                // 4. Fetch a valid creative spec to use as a template
+                const adSet = new AdSet(campaignId);
+                const ads = await adSet.getAds(['creative{object_story_spec}'], { limit: 1 });
+                if (ads.length === 0) {
+                    throw new Error(`Nenhum anúncio modelo encontrado no conjunto ${campaignId}.`);
                 }
+                const creativeSpecTemplate = ads[0].creative.object_story_spec;
+
+                // 5. Create Ad Creative
+                const newCreativeSpec = { ...creativeSpecTemplate };
+                newCreativeSpec.video_data.video_id = adVideo.id;
+                newCreativeSpec.video_data.image_hash = imageHash;
+                delete newCreativeSpec.video_data.image_url;
+
+                const creative = await account.createAdCreative({}, {
+                    [AdCreative.Fields.name]: 'Criativo - ' + adName,
+                    [AdCreative.Fields.object_story_spec]: newCreativeSpec
+                });
+
+                // 6. Create the Ad
+                const adCreationUrl = `https://graph.facebook.com/v20.0/${accountId}/ads`;
+                const adCreationData = {
+                    name: adName,
+                    adset_id: campaignId,
+                    creative: { creative_id: creative.id },
+                    status: adStatus,
+                    access_token: accessToken,
+                };
+                const adResponse = await axios.post(adCreationUrl, adCreationData);
+                createdAds.push(adResponse.data.id);
+
+            } catch (campaignError) {
+                errors.push(`Falha na campanha ${campaignId}: ${campaignError.message}`);
             }
         }
 
@@ -125,8 +190,9 @@ app.post('/api/create-ad', timeout('1200s'), upload.array('creative-files'), asy
         console.error('--- ERRO GERAL AO CRIAR ANÚNCIOS ---', error.message);
         res.status(500).json({ error: 'Falha geral no processo.', details: error.message });
     } finally {
-        // 6. Clean up temporary files
-        files.forEach(file => fs.unlink(file.path, () => {}));
+        // 7. Clean up temporary files
+        fs.unlink(videoFilePath, () => {});
+        fs.unlink(thumbnailFilePath, () => {});
     }
 });
 
